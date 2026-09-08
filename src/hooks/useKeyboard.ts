@@ -19,6 +19,7 @@ interface KeyboardActions {
   onOpenSettings?: () => void;
   onSave?: () => void;
   onSaveAs?: () => void;
+  onPan?: (direction: 'up' | 'down' | 'left' | 'right') => void;
 }
 
 const TOOL_SHORTCUTS: Record<string, ToolType> = {
@@ -30,12 +31,12 @@ const TOOL_SHORTCUTS: Record<string, ToolType> = {
   r: 'rectangle',
   l: 'line',
   c: 'circle',
-  s: 'select',
+  x: 'select',
   v: 'entitySelect',
   p: 'entityPlace',
   k: 'cableDraw',
   j: 'pipeDraw',
-  d: 'deviceLink',
+  f: 'deviceLink',
 };
 
 export interface KeyboardOptions {
@@ -155,6 +156,27 @@ export function useKeyboard(
       if (e.key === 'Escape') {
         actions.onEscape?.();
         return;
+      }
+
+      // WASD always moves the camera, regardless of the selected editing
+      // tool. This intentionally takes precedence over the S/D tool shortcuts
+      // so mappers do not have to switch to Pan just to navigate the canvas.
+      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        const panDirection =
+          e.code === 'KeyW'
+            ? 'up'
+            : e.code === 'KeyA'
+              ? 'left'
+              : e.code === 'KeyS'
+                ? 'down'
+                : e.code === 'KeyD'
+                  ? 'right'
+                  : undefined;
+        if (panDirection) {
+          e.preventDefault();
+          actions.onPan?.(panDirection);
+          return;
+        }
       }
 
       // ? key: show shortcuts modal

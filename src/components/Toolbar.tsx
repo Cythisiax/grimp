@@ -41,13 +41,13 @@ const TILE_TOOLS: ToolDef[] = [
   { id: 'rectangle', label: 'Rect', shortcut: 'R', icon: faSquare },
   { id: 'line', label: 'Line', shortcut: 'L', icon: faGripLines },
   { id: 'circle', label: 'Circle', shortcut: 'C', icon: faCircle },
-  { id: 'select', label: 'Select', shortcut: 'S', icon: faObjectGroup },
+  { id: 'select', label: 'Select', shortcut: 'X', icon: faObjectGroup },
 ];
 
 const ENTITY_TOOLS: ToolDef[] = [
   { id: 'entitySelect', label: 'E-Select', shortcut: 'V', icon: faMousePointer },
   { id: 'entityPlace', label: 'E-Place', shortcut: 'P', icon: faCube },
-  { id: 'deviceLink', label: 'Link', shortcut: 'D', icon: faLink },
+  { id: 'deviceLink', label: 'Link', shortcut: 'F', icon: faLink },
 ];
 
 const INFRA_TOOLS: ToolDef[] = [

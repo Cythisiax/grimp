@@ -29,6 +29,25 @@ afterEach(() => {
 });
 
 describe('useKeyboard held-key liveness', () => {
+  it('pans with WASD without switching the active tool', () => {
+    const actions = { ...ACTIONS, onPan: vi.fn() };
+    const { result } = renderHook(() => useKeyboard(actions));
+
+    for (const [code, key, direction] of [
+      ['KeyW', 'w', 'up'],
+      ['KeyA', 'a', 'left'],
+      ['KeyS', 's', 'down'],
+      ['KeyD', 'd', 'right'],
+    ] as const) {
+      fireEvent.keyDown(window, { code, key });
+      expect(actions.onPan).toHaveBeenLastCalledWith(direction);
+    }
+
+    expect(actions.onPan).toHaveBeenCalledTimes(4);
+    expect(ACTIONS.onSetTool).not.toHaveBeenCalled();
+    expect(result.current.isSpaceHeld).toBe(false);
+  });
+
   it('tracks Space and R while genuinely held and releases them on keyup', () => {
     const { result } = renderHook(() => useKeyboard(ACTIONS));
 

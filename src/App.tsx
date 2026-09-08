@@ -920,6 +920,26 @@ export const App: React.FC = () => {
     }
   }, [state.activeTool, state.selectedPaletteItem]);
 
+  const handlePan = useCallback((direction: 'up' | 'down' | 'left' | 'right') => {
+    // Camera.pan takes a screen-space drag delta. Move the viewport by two
+    // tiles per key repeat, independent of zoom, so WASD remains predictable.
+    const step = cameraRef.current.tileScreenSize * 2;
+    switch (direction) {
+      case 'up':
+        cameraRef.current.pan(0, step);
+        break;
+      case 'down':
+        cameraRef.current.pan(0, -step);
+        break;
+      case 'left':
+        cameraRef.current.pan(step, 0);
+        break;
+      case 'right':
+        cameraRef.current.pan(-step, 0);
+        break;
+    }
+  }, []);
+
   const keyboardActions = useMemo(
     () => ({
       onSetTool: handleSelectTool,
@@ -957,6 +977,7 @@ export const App: React.FC = () => {
       onOpenSettings: () => setShowSettings(true),
       onSave: handleSave,
       onSaveAs: handleSaveAs,
+      onPan: handlePan,
     }),
     [
       handleSelectTool,
@@ -972,6 +993,7 @@ export const App: React.FC = () => {
       handleRotateEntityCCW,
       handleCycleEntityRotationCW,
       handleCycleEntityRotationCCW,
+      handlePan,
       state.activeTool,
       state.selectedPaletteItem,
     ],
