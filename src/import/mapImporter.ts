@@ -96,7 +96,10 @@ export function importMap(yamlContent: string): ImportedMap {
   // Validate the structural shell (doc is a mapping, entities is an array of
   // uid-bearing groups) so a non-map file fails here with a readable message
   // instead of a TypeError mid-traversal. Deep values stay untouched.
-  const doc = validateMapDocument(yaml.load(yamlContent, { schema: SS14_SCHEMA }));
+  // Robust's YAML parser accepts duplicate mapping keys with last-value-wins
+  // semantics. `json: true` gives js-yaml the same compatibility behavior,
+  // allowing us to open maps the game itself accepts.
+  const doc = validateMapDocument(yaml.load(yamlContent, { schema: SS14_SCHEMA, json: true }));
 
   const meta = parseMeta(doc.meta);
   const tilemap = parseTilemap(doc.tilemap);

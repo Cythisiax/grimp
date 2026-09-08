@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { importMap } from '../mapImporter';
+import { exportMap } from '../../export/mapExporter';
 
 /**
  * Build a base64-encoded 16x16 chunk where each tile is 6 bytes (format 6):
@@ -204,6 +205,27 @@ describe('importMap', () => {
     const battery = apc!.components.find((c: any) => c.type === 'Battery');
     expect(battery).toBeDefined();
     expect((battery as any).startingCharge).toBe(25000);
+  });
+
+  it('accepts duplicate mapping keys with engine-compatible last-value-wins semantics', () => {
+    const source = buildTestMap().replace(
+      '      startingCharge: 25000',
+      '      startingCharge: 25000\n      startingCharge: 42000',
+    );
+
+    const imported = importMap(source);
+    const battery = imported.entities[0].components.find((component: any) => component.type === 'Battery') as any;
+    expect(battery.startingCharge).toBe(42000);
+
+    // The raw-component preservation path must retain the source faithfully,
+    // including both duplicate lines, even though the parsed value is last-wins.
+    const exported = exportMap(imported);
+    expect(exported).toContain('      startingCharge: 25000\n      startingCharge: 42000');
+    expect(
+      importMap(exported).entities[0].components.find((component: any) => component.type === 'Battery'),
+    ).toMatchObject({
+      startingCharge: 42000,
+    });
   });
 
   it('extracts entity position from Transform', () => {
