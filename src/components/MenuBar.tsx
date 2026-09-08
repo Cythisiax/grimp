@@ -190,12 +190,10 @@ export const MenuBar: React.FC<Props> = ({
   };
 
   const handleNewMap = () => {
-    if (dirty && !window.confirm('Unsaved changes will be lost. Continue?')) return;
     onNewMap();
   };
 
   const handleNewGrid = () => {
-    if (dirty && !window.confirm('Unsaved changes will be lost. Continue?')) return;
     onNewGrid();
   };
 

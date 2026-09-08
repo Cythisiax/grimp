@@ -1,7 +1,9 @@
-import React, { useReducer, useCallback, useRef, useEffect, useState, useMemo } from 'react';
+import React, { useCallback, useRef, useEffect, useState, useMemo } from 'react';
 import type { ToolType, PaletteItem } from './types';
 import { editorReducer } from './state/editorReducer';
 import { createInitialState, getDocumentKind, getGridProperties } from './state/editorState';
+import type { EditorState } from './state/editorState';
+import type { EditorAction } from './state/actions';
 import type { ITool } from './tools/toolTypes';
 import { PaintTool } from './tools/paintTool';
 import { EraseTool } from './tools/eraseTool';
@@ -50,6 +52,7 @@ import type { InfrastructureSelection } from './types';
 import { PerformanceHUD } from './components/PerformanceHUD';
 import { CollapsiblePanel } from './components/CollapsiblePanel';
 import { GridTabBar } from './components/GridTabBar';
+import { DocumentTabBar } from './components/DocumentTabBar';
 import { ConfirmModal } from './components/ConfirmModal';
 import { PromptModal } from './components/PromptModal';
 import { SettingsModal } from './components/SettingsModal';
@@ -99,8 +102,37 @@ const TOOL_MAP: Record<string, ITool> = {
 // Tools that support both tile and entity palette items
 const ENTITY_CAPABLE_TOOLS = new Set(['paint', 'erase', 'rectangle', 'line', 'circle', 'entitySelect', 'entityPlace']);
 
+interface OpenDocument {
+  id: string;
+  state: EditorState;
+  fileName: string | null;
+  filePath: string | null;
+  camera: { x: number; y: number; zoom: number };
+}
+
+function createOpenDocument(id: string, state = createInitialState()): OpenDocument {
+  return { id, state, fileName: null, filePath: null, camera: { x: 0, y: 0, zoom: 1 } };
+}
+
 export const App: React.FC = () => {
-  const [state, dispatch] = useReducer(editorReducer, undefined, createInitialState);
+  const [documents, setDocuments] = useState<OpenDocument[]>(() => [createOpenDocument('document-0')]);
+  const [activeDocumentId, setActiveDocumentId] = useState('document-0');
+  const documentIdRef = useRef(1);
+  const activeDocumentIdRef = useRef(activeDocumentId);
+  const activeDocument = documents.find((document) => document.id === activeDocumentId) ?? documents[0];
+  const state = activeDocument.state;
+  useEffect(() => {
+    activeDocumentIdRef.current = activeDocumentId;
+  }, [activeDocumentId]);
+  const dispatch = useCallback((action: EditorAction) => {
+    setDocuments((current) =>
+      current.map((document) =>
+        document.id === activeDocumentIdRef.current
+          ? { ...document, state: editorReducer(document.state, action) }
+          : document,
+      ),
+    );
+  }, []);
   // Shown after settings load unless previously acknowledged (#46).
   const [showDisclaimer, setShowDisclaimer] = useState(false);
   const [statusMessage, setStatusMessage] = useState('Ready');
@@ -137,12 +169,10 @@ export const App: React.FC = () => {
   const currentForkDirRef = useRef<string | null>(null);
   // A recent-file open waiting for the fork's registry init to finish.
   const [pendingOpenFile, setPendingOpenFile] = useState<{ path: string; name: string } | null>(null);
-  // Display name of the open file (#57); null for unsaved new documents.
-  const [currentFileName, setCurrentFileName] = useState<string | null>(null);
-  // Full on-disk path of the open file (#49). Only set when the file came from
-  // or went to disk natively (open/recent/Save As); null in the browser build
-  // and for new documents, where Save falls back to the Save As flow.
-  const [currentFilePath, setCurrentFilePath] = useState<string | null>(null);
+  // File identity belongs to the document, not the application: tabs can be
+  // independently saved, dirty, and restored.
+  const currentFileName = activeDocument.fileName;
+  const currentFilePath = activeDocument.filePath;
 
   // Recent project files (#35): recorded on native open/save with the owning
   // fork's dir, so the start screen can restore fork + file in one click.
@@ -176,6 +206,84 @@ export const App: React.FC = () => {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const decalPlacementSettingsRef = useRef<DecalPlacementSettings>({ ...DEFAULT_DECAL_PLACEMENT_SETTINGS });
 
+  const updateActiveDocument = useCallback(
+    (update: Pick<OpenDocument, 'fileName' | 'filePath'>) => {
+      setDocuments((current) =>
+        current.map((document) => (document.id === activeDocumentId ? { ...document, ...update } : document)),
+      );
+    },
+    [activeDocumentId],
+  );
+
+  const selectDocument = useCallback(
+    (id: string) => {
+      if (id === activeDocumentId) return;
+      const next = documents.find((document) => document.id === id);
+      if (!next) return;
+
+      TOOL_MAP[state.activeTool]?.deactivate?.();
+      setDocuments((current) =>
+        current.map((document) =>
+          document.id === activeDocumentId
+            ? { ...document, camera: { x: cameraRef.current.x, y: cameraRef.current.y, zoom: cameraRef.current.zoom } }
+            : document,
+        ),
+      );
+      cameraRef.current.x = next.camera.x;
+      cameraRef.current.y = next.camera.y;
+      cameraRef.current.zoom = next.camera.zoom;
+      setActiveDocumentId(id);
+      markAllDirty();
+    },
+    [activeDocumentId, documents, state.activeTool],
+  );
+
+  const closeDocument = useCallback(
+    (id: string) => {
+      const closing = documents.find((document) => document.id === id);
+      if (!closing || documents.length === 1) return;
+      if (closing.state.dirty && !window.confirm(`Discard unsaved changes to ${closing.fileName ?? 'this document'}?`))
+        return;
+
+      const closingIndex = documents.findIndex((document) => document.id === id);
+      const remaining = documents.filter((document) => document.id !== id);
+      setDocuments(remaining);
+      if (id !== activeDocumentId) return;
+
+      const next = remaining[Math.min(closingIndex, remaining.length - 1)];
+      cameraRef.current.x = next.camera.x;
+      cameraRef.current.y = next.camera.y;
+      cameraRef.current.zoom = next.camera.zoom;
+      setActiveDocumentId(next.id);
+      markAllDirty();
+    },
+    [activeDocumentId, documents],
+  );
+
+  const createDocument = useCallback(
+    (kind: 'Map' | 'Grid') => {
+      const id = `document-${documentIdRef.current++}`;
+      const initial = createInitialState();
+      const nextState = editorReducer(initial, { type: kind === 'Map' ? 'NEW_MAP' : 'NEW_GRID' });
+      const document = createOpenDocument(id, { ...nextState, registry: state.registry });
+      setDocuments((current) => [
+        ...current.map((existing) =>
+          existing.id === activeDocumentId
+            ? { ...existing, camera: { x: cameraRef.current.x, y: cameraRef.current.y, zoom: cameraRef.current.zoom } }
+            : existing,
+        ),
+        document,
+      ]);
+      cameraRef.current.x = 0;
+      cameraRef.current.y = 0;
+      cameraRef.current.zoom = 1;
+      setActiveDocumentId(id);
+      setStatusMessage(`New ${kind.toLowerCase()} tab`);
+      markAllDirty();
+    },
+    [activeDocumentId, state.registry],
+  );
+
   // Called when the ForkSelector picks a provider. opts.forkDir stamps
   // recent-file entries; opts.pendingFile is a recent file to import once the
   // registry is ready (the fork-then-file one-click flow, #35).
@@ -201,7 +309,7 @@ export const App: React.FC = () => {
           setLoadFailed(true);
         });
     },
-    [],
+    [dispatch],
   );
 
   const handleSwitchFork = useCallback(() => {
@@ -209,15 +317,17 @@ export const App: React.FC = () => {
       forkProvider.dispose();
     }
     resetAllCaches();
-    dispatch({ type: 'NEW_MAP' });
-    dispatch({ type: 'SET_REGISTRY', registry: null });
+    setDocuments([createOpenDocument('document-0')]);
+    setActiveDocumentId('document-0');
+    documentIdRef.current = 1;
+    cameraRef.current.x = 0;
+    cameraRef.current.y = 0;
+    cameraRef.current.zoom = 1;
     setActiveProvider(null);
     setForkProvider(null);
     setForkName('');
     setLoadFailed(false);
     currentForkDirRef.current = null;
-    setCurrentFileName(null);
-    setCurrentFilePath(null);
   }, [forkProvider]);
 
   // Warn on unsaved changes before closing/navigating away.
@@ -228,13 +338,13 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (window.electronDialogs?.available) return;
     const handler = (e: BeforeUnloadEvent) => {
-      if (state.dirty) {
+      if (documents.some((document) => document.state.dirty)) {
         e.preventDefault();
       }
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [state.dirty]);
+  }, [documents]);
 
   const activeTool = TOOL_MAP[state.activeTool] ?? null;
   // Cancel the outgoing tool's in-progress interaction on every tool switch
@@ -265,7 +375,7 @@ export const App: React.FC = () => {
       }
       dispatch({ type: 'SET_TOOL', tool });
     },
-    [state.selectedPaletteItem],
+    [state.selectedPaletteItem, dispatch],
   );
 
   const handleSelectPaletteItem = useCallback(
@@ -300,66 +410,76 @@ export const App: React.FC = () => {
         }
       }
     },
-    [state.activeTool],
+    [state.activeTool, dispatch],
   );
 
   const handleNewMap = useCallback(() => {
-    dispatch({ type: 'NEW_MAP' });
-    cameraRef.current.x = 0;
-    cameraRef.current.y = 0;
-    cameraRef.current.zoom = 1;
-    setCurrentFileName(null);
-    setCurrentFilePath(null);
-    setStatusMessage('New map');
-  }, []);
+    createDocument('Map');
+  }, [createDocument]);
 
   const handleNewGrid = useCallback(() => {
-    dispatch({ type: 'NEW_GRID' });
-    cameraRef.current.x = 0;
-    cameraRef.current.y = 0;
-    cameraRef.current.zoom = 1;
-    setCurrentFileName(null);
-    setCurrentFilePath(null);
-    setStatusMessage('New grid');
-  }, []);
+    createDocument('Grid');
+  }, [createDocument]);
 
-  const handleImport = useCallback((content: string, fileName?: string) => {
-    try {
-      const map = importMap(content);
-      dispatch({ type: 'LOAD_MAP', map, sourceName: fileName });
-      setCurrentFileName(fileName ?? null);
-      // No path by default (browser file input); native callers with a real
-      // on-disk path stamp it right after this call.
-      setCurrentFilePath(null);
-      const { grid } = map;
-      // Measure the real canvas (CSS pixels) instead of estimating from the
-      // window size; the estimate drifted from the actual layout and mis-fit
-      // the initial view. Fallback covers the import-before-first-render race.
-      const canvasEl = document.querySelector('canvas');
-      cameraRef.current.fitBounds(
-        { minX: grid.offsetX, maxX: grid.offsetX + grid.width, minY: grid.offsetY, maxY: grid.offsetY + grid.height },
-        canvasEl?.clientWidth || window.innerWidth - 280,
-        canvasEl?.clientHeight || window.innerHeight - 60,
-      );
-      setStatusMessage(`Imported: ${grid.width}x${grid.height} grid, ${map.entities.length} entities`);
-    } catch (err) {
-      setStatusMessage(`Import failed: ${String(err)}`);
-    }
-  }, []);
+  const handleImport = useCallback(
+    (content: string, fileName?: string, filePath?: string) => {
+      try {
+        const map = importMap(content);
+        const id = `document-${documentIdRef.current++}`;
+        const loaded = editorReducer(createInitialState(), { type: 'LOAD_MAP', map, sourceName: fileName });
+        const importedDocument = createOpenDocument(id, {
+          ...loaded,
+          registry: state.registry,
+        });
+        importedDocument.fileName = fileName ?? null;
+        importedDocument.filePath = filePath ?? null;
+        setDocuments((current) => [
+          ...current.map((existing) =>
+            existing.id === activeDocumentId
+              ? {
+                  ...existing,
+                  camera: { x: cameraRef.current.x, y: cameraRef.current.y, zoom: cameraRef.current.zoom },
+                }
+              : existing,
+          ),
+          importedDocument,
+        ]);
+        setActiveDocumentId(id);
+        const { grid } = map;
+        // Measure the real canvas (CSS pixels) instead of estimating from the
+        // window size; the estimate drifted from the actual layout and mis-fit
+        // the initial view. Fallback covers the import-before-first-render race.
+        const canvasEl = document.querySelector('canvas');
+        cameraRef.current.fitBounds(
+          { minX: grid.offsetX, maxX: grid.offsetX + grid.width, minY: grid.offsetY, maxY: grid.offsetY + grid.height },
+          canvasEl?.clientWidth || window.innerWidth - 280,
+          canvasEl?.clientHeight || window.innerHeight - 60,
+        );
+        setStatusMessage(`Imported: ${grid.width}x${grid.height} grid, ${map.entities.length} entities`);
+        markAllDirty();
+      } catch (err) {
+        setStatusMessage(`Import failed: ${String(err)}`);
+      }
+    },
+    [activeDocumentId, state.registry],
+  );
 
-  const handleSearchNavigate = useCallback((entity: ImportedEntity) => {
-    // Switch to entity select tool so the selection is visible
-    dispatch({ type: 'SET_TOOL', tool: 'entitySelect' });
-    // Select the entity
-    dispatch({ type: 'SELECT_ENTITY', uids: [entity.uid] });
-    // Pan camera to entity position
-    const camera = cameraRef.current;
-    camera.x = entity.position.x;
-    camera.y = entity.position.y;
-    // Always zoom in close so the entity is easy to spot
-    camera.zoom = 3;
-    markAllDirty();
-  }, []);
+  const handleSearchNavigate = useCallback(
+    (entity: ImportedEntity) => {
+      // Switch to entity select tool so the selection is visible
+      dispatch({ type: 'SET_TOOL', tool: 'entitySelect' });
+      // Select the entity
+      dispatch({ type: 'SELECT_ENTITY', uids: [entity.uid] });
+      // Pan camera to entity position
+      const camera = cameraRef.current;
+      camera.x = entity.position.x;
+      camera.y = entity.position.y;
+      // Always zoom in close so the entity is easy to spot
+      camera.zoom = 3;
+      markAllDirty();
+    },
+    [dispatch],
+  );
 
   const handleValidate = useCallback(() => {
     if (!state.registry) return;
@@ -434,8 +554,7 @@ export const App: React.FC = () => {
         if (saved) {
           const savedName = saved.split(/[\\/]/).pop() ?? saved;
           recordRecentFile(saved, savedName);
-          setCurrentFileName(savedName);
-          setCurrentFilePath(saved);
+          updateActiveDocument({ fileName: savedName, filePath: saved });
           dispatch({ type: 'MARK_SAVED' });
         }
       } else {
@@ -446,7 +565,7 @@ export const App: React.FC = () => {
     } catch (err) {
       setStatusMessage(`Save failed: ${String(err)}`);
     }
-  }, [buildYaml, currentFileName, state, recordRecentFile]);
+  }, [buildYaml, currentFileName, state, recordRecentFile, updateActiveDocument, dispatch]);
 
   // Save (Ctrl+S): write straight to the known path, no dialog (#49).
   // Documents without a path yet (new files, browser build) fall back to
@@ -469,7 +588,7 @@ export const App: React.FC = () => {
     } catch (err) {
       setStatusMessage(`Save failed: ${String(err)}`);
     }
-  }, [currentFilePath, currentFileName, buildYaml, handleSaveAs, recordRecentFile]);
+  }, [currentFilePath, currentFileName, buildYaml, handleSaveAs, recordRecentFile, dispatch]);
 
   // Native open dialog for import (Electron); the browser build uses MenuBar's
   // hidden file input instead.
@@ -477,8 +596,7 @@ export const App: React.FC = () => {
     if (!window.electronDialogs?.available) return;
     const opened = await window.electronDialogs.openYaml();
     if (opened != null) {
-      handleImport(opened.content, opened.fileName);
-      setCurrentFilePath(opened.path);
+      handleImport(opened.content, opened.fileName, opened.path);
       recordRecentFile(opened.path, opened.fileName);
     }
   }, [handleImport, recordRecentFile]);
@@ -496,16 +614,15 @@ export const App: React.FC = () => {
         setStatusMessage(`Could not open ${file.name}: removed from recent files`);
         return;
       }
-      handleImport(opened.content, opened.fileName);
-      setCurrentFilePath(opened.path);
+      handleImport(opened.content, opened.fileName, opened.path);
       recordRecentFile(opened.path, opened.fileName);
     })().catch((err: unknown) => {
       setStatusMessage(`Could not open ${file.name}: ${String(err)}`);
     });
-  }, [pendingOpenFile, state.registry, handleImport, recordRecentFile, dropRecentFile]);
+  }, [pendingOpenFile, state.registry, handleImport, recordRecentFile, dropRecentFile, dispatch]);
 
-  const handleUndo = useCallback(() => dispatch({ type: 'UNDO' }), []);
-  const handleRedo = useCallback(() => dispatch({ type: 'REDO' }), []);
+  const handleUndo = useCallback(() => dispatch({ type: 'UNDO' }), [dispatch]);
+  const handleRedo = useCallback(() => dispatch({ type: 'REDO' }), [dispatch]);
 
   // ── Native menu (Electron) ───────────────────────────────────────────────
   // Route native menu clicks to the same handlers the in-app menu uses. Kept in
@@ -514,10 +631,10 @@ export const App: React.FC = () => {
   menuCommandRef.current = (command: string) => {
     switch (command) {
       case 'file:new':
-        if (!state.dirty || window.confirm('Unsaved changes will be lost. Continue?')) handleNewMap();
+        handleNewMap();
         break;
       case 'file:newGrid':
-        if (!state.dirty || window.confirm('Unsaved changes will be lost. Continue?')) handleNewGrid();
+        handleNewGrid();
         break;
       case 'file:properties':
         setShowMapProperties(true);
@@ -583,7 +700,7 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (!window.electronMenu?.available) return;
     return window.electronMenu.onCommand((command) => menuCommandRef.current(command));
-  }, []);
+  }, [dispatch]);
 
   // Window title reflects the open file and dirty state (#57). Plain
   // document.title writes drive the Electron window title too.
@@ -703,10 +820,13 @@ export const App: React.FC = () => {
   ]);
 
   // Grid management
-  const handleSelectGrid = useCallback((index: number) => {
-    dispatch({ type: 'SET_ACTIVE_GRID', index });
-    markAllDirty();
-  }, []);
+  const handleSelectGrid = useCallback(
+    (index: number) => {
+      dispatch({ type: 'SET_ACTIVE_GRID', index });
+      markAllDirty();
+    },
+    [dispatch],
+  );
 
   const handleAddGrid = useCallback(() => {
     setActivePrompt({
@@ -714,7 +834,7 @@ export const App: React.FC = () => {
       defaultValue: `Grid ${state.grids.length + 1}`,
       onSubmit: (name) => dispatch({ type: 'ADD_GRID', name }),
     });
-  }, [state.grids.length]);
+  }, [state.grids.length, dispatch]);
 
   const handleDeleteGrid = useCallback((gridUid: number) => {
     setPendingDeleteGridUid(gridUid);
@@ -726,11 +846,14 @@ export const App: React.FC = () => {
       markAllDirty();
       setPendingDeleteGridUid(null);
     }
-  }, [pendingDeleteGridUid]);
+  }, [pendingDeleteGridUid, dispatch]);
 
-  const handleRenameGrid = useCallback((gridUid: number, newName: string) => {
-    dispatch({ type: 'RENAME_GRID', gridUid, name: newName });
-  }, []);
+  const handleRenameGrid = useCallback(
+    (gridUid: number, newName: string) => {
+      dispatch({ type: 'RENAME_GRID', gridUid, name: newName });
+    },
+    [dispatch],
+  );
 
   const handleRequestRename = useCallback(
     (gridUid: number, currentName: string) => {
@@ -803,7 +926,7 @@ export const App: React.FC = () => {
       dispatch({ type: 'SET_TOOL', tool: 'select' });
     }
     setStatusMessage('Paste, click to place');
-  }, [getSelectTool, makeToolContext, state.activeTool]);
+  }, [getSelectTool, makeToolContext, state.activeTool, dispatch]);
 
   const handleDelete = useCallback(() => {
     // If entity select tool is active, delete selected entities
@@ -1017,23 +1140,29 @@ export const App: React.FC = () => {
     markSceneDirty();
   }, []);
 
-  const handleInfraChange = useCallback((sel: InfrastructureSelection) => {
-    setInfraSelection(sel);
-    cableDrawTool.cableType = sel.cableType;
-    pipeDrawTool.pipeType = sel.pipeType;
-    // Auto-switch to appropriate tool
-    if (sel.mode === 'cable') {
-      dispatch({ type: 'SET_TOOL', tool: 'cableDraw' });
-    } else {
-      dispatch({ type: 'SET_TOOL', tool: 'pipeDraw' });
-    }
-  }, []);
+  const handleInfraChange = useCallback(
+    (sel: InfrastructureSelection) => {
+      setInfraSelection(sel);
+      cableDrawTool.cableType = sel.cableType;
+      pipeDrawTool.pipeType = sel.pipeType;
+      // Auto-switch to appropriate tool
+      if (sel.mode === 'cable') {
+        dispatch({ type: 'SET_TOOL', tool: 'cableDraw' });
+      } else {
+        dispatch({ type: 'SET_TOOL', tool: 'pipeDraw' });
+      }
+    },
+    [dispatch],
+  );
 
-  const handleSelectPrefab = useCallback((prefab: PrefabData) => {
-    prefabPlaceTool.setPrefab(prefab);
-    dispatch({ type: 'SET_TOOL', tool: 'prefabPlace' });
-    setStatusMessage(`Prefab: ${prefab.name} (${prefab.width}\u00d7${prefab.height}) \u2014 click to place`);
-  }, []);
+  const handleSelectPrefab = useCallback(
+    (prefab: PrefabData) => {
+      prefabPlaceTool.setPrefab(prefab);
+      dispatch({ type: 'SET_TOOL', tool: 'prefabPlace' });
+      setStatusMessage(`Prefab: ${prefab.name} (${prefab.width}\u00d7${prefab.height}) \u2014 click to place`);
+    },
+    [dispatch],
+  );
 
   // Track cursor position (world coordinates)
   useEffect(() => {
@@ -1271,6 +1400,18 @@ export const App: React.FC = () => {
       <div className="flex flex-1 overflow-hidden">
         <Toolbar activeTool={state.activeTool} onSelectTool={handleSelectTool} />
         <div className="canvas-area flex-1 flex flex-col overflow-hidden">
+          <DocumentTabBar
+            documents={documents.map((document) => ({
+              id: document.id,
+              name:
+                document.fileName ?? (getDocumentKind(document.state) === 'Grid' ? 'Untitled Grid' : 'Untitled Map'),
+              dirty: document.state.dirty,
+            }))}
+            activeDocumentId={activeDocumentId}
+            onSelectDocument={selectDocument}
+            onCloseDocument={closeDocument}
+            onNewMap={handleNewMap}
+          />
           <GridTabBar
             grids={state.grids}
             activeGridIndex={state.activeGridIndex}
