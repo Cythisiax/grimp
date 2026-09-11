@@ -68,6 +68,7 @@ import {
 import type { AppSettings, ForkSettings, FileSettings } from './settings/settingsStore';
 import { BenchmarkOverlay } from './components/BenchmarkOverlay';
 import { markSceneDirty, markAllDirty } from './rendering/dirtyFlags';
+import { rebuildSpatialIndex } from './rendering/spatialIndex';
 import { resetAllCaches } from './loaders/resetAllCaches';
 import { validateMap } from './validation/mapValidator';
 import type { ValidationIssue } from './validation/mapValidator';
@@ -232,6 +233,11 @@ export const App: React.FC = () => {
       cameraRef.current.x = next.camera.x;
       cameraRef.current.y = next.camera.y;
       cameraRef.current.zoom = next.camera.zoom;
+      // The spatial index is renderer-global while document state is not.
+      // Repoint it before the next frame so this tab cannot render entities
+      // from whichever document was active last.
+      rebuildSpatialIndex(next.state.entities);
+      activeDocumentIdRef.current = id;
       setActiveDocumentId(id);
       markAllDirty();
     },
@@ -254,6 +260,8 @@ export const App: React.FC = () => {
       cameraRef.current.x = next.camera.x;
       cameraRef.current.y = next.camera.y;
       cameraRef.current.zoom = next.camera.zoom;
+      rebuildSpatialIndex(next.state.entities);
+      activeDocumentIdRef.current = next.id;
       setActiveDocumentId(next.id);
       markAllDirty();
     },
